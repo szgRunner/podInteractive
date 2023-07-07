@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: kube-system
+  name: podinteractive
+  labels:
+    app: podinteractive
+spec:
+  replicas: 1
+  template:
+    metadata:
+      name: podinteractive
+      labels:
+        app: podinteractive
+    spec:
+      containers:
+        - name: podinteractive
+          image: www.registry.it/podinteractive
+          imagePullPolicy: Always
+      restartPolicy: Always
+      serviceAccountName: podinteractive
+  selector:
+    matchLabels:
+      app: podinteractive
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: kube-system
+  name: podinteractive
+spec:
+  selector:
+    app: podinteractive
+  ports:
+    - port: 9999
+      targetPort: 9999
+      nodePort: 9999
+  type: NodePort
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: podinteractive
+  namespace: kube-system
+spec:
+  rules:
+    - host: www.podinteractive.geovis.ai
+      http:
+        paths:
+          - backend:
+              serviceName: podinteractive
+              servicePort: 9999
+            path: /
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: podinteractive
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  namespace: kube-system
+  name: podinteractive-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: podinteractive-role
+subjects:
+  - kind: ServiceAccount
+    name: podinteractive
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: podinteractive-role
+  namespace: kube-system
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+  - nonResourceURLs:
+      - '*'
+    verbs:
+      - '*'
+

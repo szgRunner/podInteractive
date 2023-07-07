@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <link rel="icon" type="image/x-icon" href="/static/image/favicon.ico">
+    <link rel="stylesheet" href="/static/js/xterm/xterm.css"/>
+    <link rel="stylesheet" href="/static/style/css/style.css">
+    <script src="/static/js/xterm/xterm.js"></script>
+    <script src="/static/js/addons/xterm-addon-fit.js"></script>
+    <script src="/static/js/addons/xterm-addon-webgl.js"></script>
+    <style type="text/css">
+        .xterm-screen{
+            height: 92vh !important;
+        }
+        #div-line{
+            width: 200px;
+            height: 40px;
+            border-radius: 5px;
+            position: relative;
+        }
+
+        #div-line > select {
+            display: none;
+            outline: none;
+            width: 100%;
+            height: 40px;
+            line-height: 40px;
+            /*隐藏select 下拉图标*/
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            padding-left: 60px;
+        }
+
+        .mat-option {
+            font-weight: normal;
+            display: block;
+            white-space: pre;
+            min-height: 1.2em;
+            padding: 0px 25px 1px;
+        }
+
+        option{
+            text-indent: 10px;
+        }
+
+        .mat-option:hover{
+            background-color: #bcc3c7;
+            color: #fff;
+        }
+    </style>
+    <title>容器日志服务</title>
+</head>
+<body>
+<div style="width: 100%;height: 100%">
+    <div class="inner" style="width: 100%; height: 3vh">
+        <h2>
+            <i class="icon icon-file"><span id="title"></span>
+                {{/*<div  style="display: inline-flex;margin-left: 2rem;"  class="text-muted">
+                    <div class="flex-column" style="margin-right: 2rem;display: flex">
+                        <div style="flex-direction: row">
+                            <label for="line"></label>
+                            <select id="line" class="select-line text-muted" style="border: none;width: 100%;height: 40px;outline: none;">
+                                <option value="" selected>NONE</option>
+                                <option class="mat-option" value="300">300</option>
+                                <option class="mat-option" value="500">500</option>
+                                <option class="mat-option" value="1000">1000</option>
+                            </select>
+                        </div>
+                        <div style="flex-direction: row">
+                            <span style="font-size: 15px"> 行</span>
+                        </div>
+                    </div>
+                    <div id="div-since" class="flex-column" style="display: flex">
+                        <div style="flex-direction: row">
+                            <label for="since"></label>
+                            <select id="since" class="select-since text-muted" style="border: none;width: 100%;height: 40px;outline: none;">
+                                <option value="" selected>NONE</option>
+                                <option class="mat-option"  value="180">3</option>
+                                <option class="mat-option" value="300">5</option>
+                                <option class="mat-option" value="600">10</option>
+                            </select>
+                        </div>
+                        <div style="flex-direction: row">
+                            <span style="font-size: 15px"> 分钟</span>
+                        </div>
+                    </div>
+                </div>*/}}
+            </i>
+            <div id="conn" class="console-status text-muted pull-right" style="float: right"></div>
+        </h2>
+    </div>
+    <pre id="terminal"></pre>
+</div>
+</body>
+<script>
+
+    //根据QueryString参数名称获取值
+    function getQueryStringByName(name) {
+        let result = location.search.match(new RegExp("[\?\&]" + name + "=([^\&]+)", "i"));
+        if (result == null || result.length < 1) {
+            return "";
+        }
+        return result[1];
+    }
+
+    function deleteQueryParam(url , name){
+        const fromIndex = url.indexOf(name + "=");
+        if (fromIndex !== -1){
+            const startIndex = url.indexOf("=", fromIndex);
+            const endIndex = url.indexOf("&", fromIndex);
+            const hashIndex = url.indexOf("#", fromIndex);
+
+            let reg;
+            if (endIndex !== -1) {
+                const num = endIndex - startIndex;
+                reg = new RegExp(name + '=.{' + num + '}');
+                url = url.replace(reg, '');
+            }else if (hashIndex !== -1) {
+                const num = hashIndex - startIndex -1 ;
+                reg = new RegExp('&?' + name + '=.{' + num + '}');
+                url = url.replace(reg, '');
+            }else {
+                reg = new RegExp('&?' + name + '=.*');
+                url = url.replace(reg, '');
+            }
+        }
+        return url
+    }
+
+    let term = new Terminal({
+        cursorBlink: true,
+        useStyle: true,
+        binaryType: 'arraybuffer',
+        fontFamily: 'Hack Braille, Courier New, Courier, monospace',
+        fontSize: 14,
+        rendererType: 'canvas',
+        macOptionIsMeta: true,
+        theme: {
+            foreground: '#d2d2d2',
+            background: '#2b2b2b',
+            cursor: '#adadad',
+            black: '#000000',
+            red: '#d81e00',
+            green: '#5ea702',
+            yellow: '#cfae00',
+            blue: '#427ab3',
+            magenta: '#89658e',
+            cyan: '#00a7aa',
+            white: '#dbded8',
+            brightBlack: '#686a66',
+            brightRed: '#f54235',
+            brightGreen: '#99e343',
+            brightYellow: '#fdeb61',
+            brightBlue: '#84b0d8',
+            brightMagenta: '#bc94b7',
+            brightCyan: '#37e6e8',
+            brightWhite: '#f1f1f0',
+        },
+    });
+
+    let webSocket = null;
+    const ns = getQueryStringByName("ns");
+    const podName = getQueryStringByName("podName");
+    const containerName = getQueryStringByName("containerName");
+    const containerLine = getQueryStringByName("containerLine");
+    const containerSince = getQueryStringByName("containerSince");
+    const containerId = getQueryStringByName("containerId");
+    const title = document.getElementById('title');
+    title.innerText = "日志: " + containerName;
+    let conn = document.getElementById("conn");
+    let path;
+    if (containerId !== "") {
+        path = "ws://{{.}}/docker/" + containerId + "/log";
+    } else {
+        path = "ws://{{.}}/ns/" + ns + "/podName/" + podName + "/log?containerName=" + containerName
+    }
+
+    connect(path);
+
+    function connect(url) {
+        if (typeof (WebSocket) === 'undefined') {
+            console.error("您的浏览器版本不支持socket通信");
+        } else {
+            // 创建websocket 对象
+            webSocket = new WebSocket(url);
+
+            webSocket.onopen = () => onopen();
+            webSocket.onclose = () => onclose();
+            webSocket.onmessage = (evt) => onmessage(evt);
+            webSocket.onerror = () => onerror();
+
+        }
+    }
+
+    function isNotNullOrUndefined(obj) {
+        return !(undefined === obj || null === obj);
+    }
+
+    term.open(document.getElementById('terminal'));
+
+    fit();
+
+    function onopen() {
+        conn.innerText = "等待连接";
+        console.log('websocket 已连接 ');
+    }
+
+    function onclose() {
+        conn.innerText = "已断开";
+        term.writeln('Close ');
+        webSocket = null;
+    }
+
+    function onmessage(evt) {
+        conn.innerText = "已连接";
+        term.writeln(evt.data);
+        term.focus();
+    }
+
+    function onerror() {
+        conn.innerText = "连接异常";
+        term.writeln('ERROR ');
+        webSocket = null;
+    }
+
+    function proposeGeometry(term) {
+        if (!term.element.parentElement) {
+            return null;
+        }
+        var parentElementStyle = window.getComputedStyle(term.element.parentElement);
+        var parentElementHeight = parseInt(parentElementStyle.getPropertyValue('height'));
+        var parentElementWidth = Math.max(0, parseInt(parentElementStyle.getPropertyValue('width')));
+        var elementStyle = window.getComputedStyle(term.element);
+        var elementPadding = {
+            top: parseInt(elementStyle.getPropertyValue('padding-top')),
+            bottom: parseInt(elementStyle.getPropertyValue('padding-bottom')),
+            right: parseInt(elementStyle.getPropertyValue('padding-right')),
+            left: parseInt(elementStyle.getPropertyValue('padding-left'))
+        };
+        var elementPaddingVer = elementPadding.top + elementPadding.bottom;
+        var elementPaddingHor = elementPadding.right + elementPadding.left;
+        var availableHeight = parentElementHeight - elementPaddingVer;
+        var availableWidth = parentElementWidth - elementPaddingHor - term._core.viewport.scrollBarWidth;
+        var geometry = {
+            cols: Math.floor(availableWidth / term._core._renderCoordinator.dimensions.actualCellWidth),
+            rows: Math.floor(availableHeight / term._core._renderCoordinator.dimensions.actualCellHeight)
+        };
+        return geometry;
+    }
+
+    function fit() {
+        var geometry = proposeGeometry(term);
+        if (geometry) {
+            if (term.rows !== geometry.rows || term.cols !== geometry.cols) {
+                term._core._renderCoordinator.clear();
+                term.resize(geometry.cols, geometry.rows);
+            }
+        }
+    }
+</script>
+</html>

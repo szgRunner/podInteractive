@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>容器终端服务</title>
+    <link rel="icon" type="image/x-icon" href="/static/image/favicon.ico">
+    <link rel="stylesheet" href="/static/js/xterm/xterm.css"/>
+    <link rel="stylesheet" href="/static/style/css/style.css">
+    <script src="/static/js/xterm/xterm.js"></script>
+    <style type="text/css">
+        .xterm-screen{
+            height: 92vh !important;
+        }
+    </style>
+</head>
+<body>
+<div style="width: 100%;height: 100%">
+    <div class="inner" style="width: 100%; height: 3vh">
+        <h2>
+            <i class="icon icon-terminal">
+                <span id="title"></span>
+            </i>
+            <div id="conn" class="console-status text-muted pull-right"></div>
+        </h2>
+    </div>
+    <pre id="terminal"></pre>
+</div>
+</body>
+<script>
+
+    //根据QueryString参数名称获取值
+    function getQueryStringByName(name) {
+        var result = location.search.match(new RegExp("[\?\&]" + name + "=([^\&]+)", "i"));
+        if (result == null || result.length < 1) {
+            return "";
+        }
+        return result[1];
+    }
+
+    var ws;
+    let term = new Terminal({
+        cursorBlink: true,
+        useStyle: true,
+        binaryType: 'arraybuffer',
+        fontFamily: 'Hack Braille, Courier New, Courier, monospace',
+        fontSize: 14,
+        rendererType: 'canvas',
+        macOptionIsMeta: true,
+        theme: {
+            foreground: '#d2d2d2',
+            background: '#2b2b2b',
+            cursor: '#adadad',
+            black: '#000000',
+            red: '#d81e00',
+            green: '#5ea702',
+            yellow: '#cfae00',
+            blue: '#427ab3',
+            magenta: '#89658e',
+            cyan: '#00a7aa',
+            white: '#dbded8',
+            brightBlack: '#686a66',
+            brightRed: '#f54235',
+            brightGreen: '#99e343',
+            brightYellow: '#fdeb61',
+            brightBlue: '#84b0d8',
+            brightMagenta: '#bc94b7',
+            brightCyan: '#37e6e8',
+            brightWhite: '#f1f1f0',
+        },
+    });
+
+    term.open(document.getElementById('terminal'));
+
+    var ns = getQueryStringByName("ns");
+    var podName = getQueryStringByName("podName");
+    var containerName = getQueryStringByName("containerName");
+    var containerId = getQueryStringByName("containerId");
+    var title = document.getElementById('title');
+    title.innerText = "命令行: " + containerName;
+    var conn = document.getElementById("conn");
+    var path;
+    if (containerId !== "") {
+        path = "ws://{{.}}/docker/" + containerId + "/exec";
+    } else {
+        path = "ws://{{.}}/ns/" + ns + "/podName/" + podName + "/exec?containerName=" + containerName
+    }
+    ws = new WebSocket(path);
+
+    ws.onopen = function () {
+        conn.innerText = "等待连接";
+    };
+    ws.onmessage = function (evt) {
+        conn.innerText = "已连接";
+        term.write(evt.data);
+        term.focus();
+    };
+    ws.onerror = function () {
+        conn.innerText = "连接异常";
+        term.writeln("ERROR ");
+        // term.destroy();
+    };
+    ws.onclose = function () {
+        conn.innerText = "已断开";
+        term.writeln('CLOSE ');
+        // term.destroy();
+    };
+
+    term.on("data", function (evt) {
+        ws.send(evt);
+    });
+
+
+    function waitForConnection(callback, interval) {
+        if (ws.readyState === 1) {
+            callback();
+        } else {
+            // var that = this;
+            // optional: implement backoff for interval here
+            setTimeout(function () {
+                waitForConnection(callback, interval);
+            }, interval);
+        }
+    };
+
+    function proposeGeometry(term) {
+        if (!term.element.parentElement) {
+            return null;
+        }
+        var parentElementStyle = window.getComputedStyle(term.element.parentElement);
+        var parentElementHeight = parseInt(parentElementStyle.getPropertyValue('height'));
+        var parentElementWidth = Math.max(0, parseInt(parentElementStyle.getPropertyValue('width')));
+        var elementStyle = window.getComputedStyle(term.element);
+        var elementPadding = {
+            top: parseInt(elementStyle.getPropertyValue('padding-top')),
+            bottom: parseInt(elementStyle.getPropertyValue('padding-bottom')),
+            right: parseInt(elementStyle.getPropertyValue('padding-right')),
+            left: parseInt(elementStyle.getPropertyValue('padding-left'))
+        };
+        var elementPaddingVer = elementPadding.top + elementPadding.bottom;
+        var elementPaddingHor = elementPadding.right + elementPadding.left;
+        var availableHeight = parentElementHeight - elementPaddingVer;
+        var availableWidth = parentElementWidth - elementPaddingHor - term._core.viewport.scrollBarWidth;
+        var geometry = {
+            cols: Math.floor(availableWidth / term._core._renderCoordinator.dimensions.actualCellWidth),
+            rows: Math.floor(availableHeight / term._core._renderCoordinator.dimensions.actualCellHeight)
+        };
+        return geometry;
+    }
+
+    function fit() {
+        var geometry = proposeGeometry(term);
+        if (geometry) {
+            if (term.rows !== geometry.rows || term.cols !== geometry.cols) {
+                term._core._renderCoordinator.clear();
+                term.resize(geometry.cols, geometry.rows);
+            }
+        }
+        if (ws && term) {
+            ws.send(JSON.stringify({
+                Width: term.cols,
+                Height: term.rows
+            }));
+        }
+
+
+    }
+
+    waitForConnection(function () {
+        fit()
+    }, 1000);
+
+
+</script>
+</html>
