@@ -14,12 +14,76 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"net/http"
 	"podInteractive/pkg/utils"
+	"sync"
+	"time"
 )
 
 var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
+}
+
+type WsMessage struct {
+	MessageType int
+	Data        []byte
+}
+
+type WsConnection struct {
+	wsSocket *websocket.Conn
+	outChan  chan *WsMessage
+	sync.Mutex
+	isClosed  bool
+	closeChan chan byte
+}
+
+func (wsConn *WsConnection) wsClose() {
+	wsConn.wsSocket.Close()
+	wsConn.Lock()
+	defer wsConn.Unlock()
+	if !wsConn.isClosed {
+		wsConn.isClosed = true
+		close(wsConn.closeChan)
+	}
+}
+
+func (wsConn *WsConnection) wsWriteLoop() {
+	for {
+		select {
+		case msg := <-wsConn.outChan:
+			if err := wsConn.wsSocket.WriteMessage(msg.MessageType, msg.Data); err != nil {
+				continue
+			}
+		case <-wsConn.closeChan:
+			wsConn.wsClose()
+		}
+	}
+}
+
+func (wsConn *WsConnection) wsWrite(messageType int, data []byte) {
+	if !wsConn.isClosed {
+		wsConn.outChan <- &WsMessage{messageType, data}
+	}
+}
+
+func initWebSocket(response *restful.Response, request *http.Request) (wsConn *WsConnection, err error) {
+	wsSocket, err := upgrader.Upgrade(response, request, nil)
+	if err != nil{
+		return &WsConnection{}, nil
+	}
+	wsConn = &WsConnection{
+		wsSocket:  wsSocket,
+		outChan:   make(chan *WsMessage),
+		Mutex:     sync.Mutex{},
+		isClosed:  false,
+		closeChan: make(chan byte),
+	}
+
+	go wsConn.wsWriteLoop()
+
+	return
 }
 
 // 	ws.Route(ws.GET("/ns/{ns}/podName/{podName}/log")
@@ -34,9 +98,10 @@ func PodLog(request *restful.Request, response *restful.Response) {
 	}
 
 	// 完成 ws 协议的握手操作
-	c, err := upgrader.Upgrade(response, request.Request, nil)
+	c, err := initWebSocket(response, request.Request)
 	if err != nil {
 		fmt.Println("websocket-> upgrade-> err:", err)
+		c.wsClose()
 		return
 	}
 
@@ -47,36 +112,21 @@ func PodLog(request *restful.Request, response *restful.Response) {
 
 	go func() {
 		for {
-			if _, _, err := c.NextReader(); err != nil {
+			if _, _, err := c.wsSocket.NextReader(); err != nil {
 				cancel()
-				c.Close()
+				c.wsClose()
 				break
 			}
 		}
 	}()
-	logEvent := make(chan []byte)
+	//logEvent := make(chan []byte)
 
-	ReadLog(ctx, readerGroup, logEvent, ns, podName, containerName)
+	ReadLog(ctx, readerGroup, c, ns, podName, containerName)
 
 	go func() {
 		_ = readerGroup.Wait()
-		close(logEvent)
+		close(c.outChan)
 	}()
-	done := false
-	for !done {
-		select {
-		case item, ok := <-logEvent:
-			if !ok {
-				done = true
-				break
-			}
-			if err := writeData(c, item); err != nil {
-				cancel()
-			}
-
-		}
-	}
-
 }
 
 func writeData(c *websocket.Conn, buf []byte) error {
@@ -100,7 +150,7 @@ func GetFirstContainerName(ns string, podName string) (string, error) {
 	return pod.Spec.Containers[0].Name, nil
 }
 
-func ReadLog(ctx context.Context, eg *errgroup.Group, logEvent chan []byte, ns, podName, containerName string) {
+func ReadLog(ctx context.Context, eg *errgroup.Group, wsConn * WsConnection, ns, podName, containerName string) {
 	eg.Go(func() error {
 		//now := time.Now()
 		req := utils.Cli().CoreV1().RESTClient().Get().
@@ -123,13 +173,17 @@ func ReadLog(ctx context.Context, eg *errgroup.Group, logEvent chan []byte, ns, 
 		}
 
 		podLogReader := bufio.NewReader(podLogStream)
+		PodLog:
 		for {
+			_ = wsConn.wsSocket.SetWriteDeadline(time.Now().Add(1 * time.Minute))
 			line, err := podLogReader.ReadBytes('\n')
 			if err != nil {
 				fmt.Println("podLogReader -> ReadBytes-> err: ", err)
-				return err
+				podLogStream.Close()
+				wsConn.wsWrite(websocket.CloseMessage, []byte{})
+				break PodLog
 			}
-			logEvent <- line
+			wsConn.wsWrite(websocket.TextMessage, line)
 			if err == io.EOF {
 				podLogStream.Close()
 				break
